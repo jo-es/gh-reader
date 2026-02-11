@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  SCRIPT_PATH="$(readlink -f "$SCRIPT_PATH" 2>/dev/null || echo "$SCRIPT_PATH")"
+fi
+ROOT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+TSX_LOADER="$ROOT_DIR/node_modules/tsx/dist/loader.mjs"
+
+if [[ ! -f "$TSX_LOADER" ]]; then
+  echo "Missing tsx loader at $TSX_LOADER" >&2
+  echo "Run: npm install" >&2
+  exit 1
+fi
+
+exec node --import "$TSX_LOADER" "$ROOT_DIR/src/index.tsx" "$@"
