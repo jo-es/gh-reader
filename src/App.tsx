@@ -1588,7 +1588,7 @@ export function CommentsViewer({
     Math.max(0, listRows.length - listWindow)
   );
 
-  type DetailActionId = "compose" | "reply" | "send" | "cancel" | "copilot-review";
+  type DetailActionId = "compose" | "reply" | "send" | "cancel";
   interface DetailActionButton {
     id: DetailActionId;
     label: string;
@@ -1596,6 +1596,10 @@ export function CommentsViewer({
     dim?: boolean;
   }
   interface DetailActionLayout extends DetailActionButton {
+    startX: number;
+    endX: number;
+  }
+  interface ListHeaderCopilotLayout {
     startX: number;
     endX: number;
   }
@@ -1613,21 +1617,12 @@ export function CommentsViewer({
       ];
     }
 
-    const buttons: DetailActionButton[] = [];
     if (replyableSelectedRow) {
-      buttons.push({ id: "reply", label: "[Reply]", color: "cyan" });
-    } else {
-      buttons.push({ id: "compose", label: "[Compose]", color: "cyan" });
+      return [{ id: "reply", label: "[Reply]", color: "cyan" }];
     }
 
-    buttons.push({
-      id: "copilot-review",
-      label: isRequestingCopilot ? "[Requesting Copilot...]" : "[Copilot Review]",
-      color: isRequestingCopilot ? "gray" : "magenta",
-      dim: isRequestingCopilot
-    });
-    return buttons;
-  }, [composerMode, isRequestingCopilot, isSubmittingComment, replyableSelectedRow]);
+    return [{ id: "compose", label: "[Compose]", color: "cyan" }];
+  }, [composerMode, isSubmittingComment, replyableSelectedRow]);
 
   const detailActionSpans = useMemo(() => {
     const spans: InlineSpan[] = [];
@@ -1649,11 +1644,14 @@ export function CommentsViewer({
     } else if (isRequestingCopilot) {
       spans.push({ text: "  Requesting Copilot review...", dim: true });
     } else if (replyableSelectedRow) {
-      spans.push({ text: "  Press r to reply | c Copilot review", dim: true });
+      spans.push({ text: "  Press r to reply | c Copilot review (header button)", dim: true });
     } else if (selectedRow && selectedRow.kind === "system") {
-      spans.push({ text: "  System event (read-only) | c Copilot review", dim: true });
+      spans.push({ text: "  System event (read-only) | c Copilot review (header button)", dim: true });
     } else {
-      spans.push({ text: "  Press Enter to add a new comment... | c Copilot review", dim: true });
+      spans.push({
+        text: "  Press Enter to add a new comment... | c Copilot review (header button)",
+        dim: true
+      });
     }
 
     return spans;
@@ -1673,6 +1671,37 @@ export function CommentsViewer({
       };
     });
   }, [detailActionButtons]);
+  const listHeaderColumnStart = 4;
+  const listHeaderTitle = `Comments (${rows.length})${panelFocus === "list" ? "  [focus]" : ""}`;
+  const listHeaderCopilotLabel = isRequestingCopilot ? "[Requesting Copilot...]" : "[Copilot Review]";
+  const listHeaderMinGap = 1;
+  const listHeaderTitleMax = Math.max(
+    1,
+    Math.max(16, listWrapWidth) - listHeaderCopilotLabel.length - listHeaderMinGap
+  );
+  const listHeaderTitleText = truncateText(listHeaderTitle, listHeaderTitleMax);
+  const listHeaderGap = Math.max(
+    listHeaderMinGap,
+    Math.max(16, listWrapWidth) - listHeaderTitleText.length - listHeaderCopilotLabel.length
+  );
+  const listHeaderSpans: InlineSpan[] = [
+    {
+      text: listHeaderTitleText,
+      color: panelFocus === "list" ? "yellow" : "cyan",
+      bold: true
+    },
+    { text: " ".repeat(listHeaderGap) },
+    {
+      text: listHeaderCopilotLabel,
+      color: isRequestingCopilot ? "gray" : "magenta",
+      bold: true,
+      dim: isRequestingCopilot
+    }
+  ];
+  const listHeaderCopilotLayout: ListHeaderCopilotLayout = {
+    startX: listHeaderColumnStart + listHeaderTitleText.length + listHeaderGap,
+    endX: listHeaderColumnStart + listHeaderTitleText.length + listHeaderGap + listHeaderCopilotLabel.length - 1
+  };
 
   const visibleRows = useMemo(() => {
     return listRows.slice(listStart, listStart + listWindow).map((row, idx) => {
@@ -1727,6 +1756,7 @@ export function CommentsViewer({
   const detailPanelTopRow = layoutCursor + 1;
   const listPanelBottomRow = listPanelTopRow + listPanelHeight - 1;
   const detailPanelBottomRow = detailPanelTopRow + detailPanelHeight - 1;
+  const listHeaderRow = listPanelTopRow + 1;
   const listFirstItemRow = listPanelTopRow + 2;
   const detailActionRow = detailPanelBottomRow - 1;
 
@@ -1748,13 +1778,8 @@ export function CommentsViewer({
 
     if (action === "send") {
       void submitComposerRef.current();
-      return;
     }
-
-    if (action === "copilot-review") {
-      void requestCopilotReviewForCurrentPr();
-    }
-  }, [closeComposer, openTopLevelComposer, requestCopilotReviewForCurrentPr, startReplyForSelection]);
+  }, [closeComposer, openTopLevelComposer, startReplyForSelection]);
 
   let detailTitle = "";
   let detailLocation = "";
@@ -1881,6 +1906,14 @@ export function CommentsViewer({
           if (clickedPanel === "list") {
             panelFocusRef.current = "list";
             setPanelFocus("list");
+            if (
+              event.y === listHeaderRow &&
+              event.x >= listHeaderCopilotLayout.startX &&
+              event.x <= listHeaderCopilotLayout.endX
+            ) {
+              void requestCopilotReviewForCurrentPr();
+              continue;
+            }
             const offset = event.y - listFirstItemRow;
             if (offset >= 0 && offset < visibleRows.length) {
               const next = clamp(listStart + offset, 0, maxIndex);
@@ -1922,6 +1955,9 @@ export function CommentsViewer({
     detailPanelBottomRow,
     detailPanelTopRow,
     isRawModeSupported,
+    listHeaderCopilotLayout.endX,
+    listHeaderCopilotLayout.startX,
+    listHeaderRow,
     listFirstItemRow,
     listPanelBottomRow,
     listPanelTopRow,
@@ -1931,6 +1967,7 @@ export function CommentsViewer({
     moveDetail,
     moveIndex,
     openTopLevelComposer,
+    requestCopilotReviewForCurrentPr,
     runDetailAction,
     stdin,
     stdout,
@@ -2130,8 +2167,9 @@ export function CommentsViewer({
       )}
 
       <Box marginTop={1} flexDirection="column" borderStyle="round" paddingX={1} height={listPanelHeight}>
-        <Text color={panelFocus === "list" ? "yellow" : "cyan"} wrap="wrap">
-          {`Comments (${rows.length})${panelFocus === "list" ? "  [focus]" : ""}`}
+        <Text wrap="truncate-end">
+          {""}
+          <InlineText spans={listHeaderSpans} />
         </Text>
         {visibleRows.map((item) => (
           <Text key={`comment-row-${item.row.key}`} wrap="truncate-end">

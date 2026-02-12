@@ -111,9 +111,11 @@ Compose mode:
 - `Ctrl+S`: send
 - `Esc`: cancel
 
+Comments header action (mouse + keyboard):
+- `[Copilot Review]` at the right side of the `Comments (...)` row requests Copilot review for the current PR
+
 Detail action row (mouse + keyboard):
 - `[Compose]` / `[Reply]`: open composer
-- `[Copilot Review]`: request Copilot review for the current PR
 - `[Send]` / `[Cancel]`: active while composing
 
 ## Display behavior
@@ -127,7 +129,7 @@ Detail action row (mouse + keyboard):
 - Inline threads linked to a review are nested under that review summary.
 - Inline replies are indented in the top list.
 - The bottom panel shows full markdown-rendered body for the selected entry.
-- The bottom panel also contains an action row for compose/reply/Copilot actions.
+- The bottom panel contains an action row for compose/reply/send/cancel actions.
 - Commit hashes in markdown bodies (for example `7b3aeaf`) are rendered as clickable GitHub commit links.
 - Recent timestamps show relative time (for example `12min ago`), older items show date+time.
 - Comment bodies render lightweight markdown styling (headings, bullets, links, inline code, emphasis).
