@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, useStdin, useStdout } from "ink";
 import type {
   AiReviewEvent,
@@ -1375,6 +1375,7 @@ export function CommentsViewer({
   const panelFocusRef = useRef<PanelFocus>("list");
   const pendingComposerRef = useRef<ComposerMode>(null);
   const submitComposerRef = useRef<() => Promise<void>>(async () => undefined);
+  const selectedRowKeyRef = useRef<string>(listRows[initialActiveIndex]?.key || ADD_COMMENT_ROW.key);
   const commitBaseUrl = `https://github.com/${data.repo.nameWithOwner}`;
 
   const maxIndex = Math.max(0, listRows.length - 1);
@@ -1507,9 +1508,22 @@ export function CommentsViewer({
     }
   }, [composerMode, isRequestingCopilot, onRequestCopilotReview]);
 
+  useLayoutEffect(() => {
+    const previousKey = selectedRowKeyRef.current;
+    setActiveIndex((prev) => {
+      const clamped = clamp(prev, 0, maxIndex);
+      if (listRows[clamped]?.key === previousKey) {
+        return clamped;
+      }
+
+      const matched = listRows.findIndex((row) => row.key === previousKey);
+      return matched >= 0 ? matched : clamped;
+    });
+  }, [listRows, maxIndex]);
+
   useEffect(() => {
-    setActiveIndex((prev) => clamp(prev, 0, maxIndex));
-  }, [maxIndex]);
+    selectedRowKeyRef.current = activeListRow.key;
+  }, [activeListRow.key]);
 
   useEffect(() => {
     setDetailOffset(0);
@@ -1904,8 +1918,6 @@ export function CommentsViewer({
         if (event.kind === "M" && event.code === 0) {
           const clickedPanel = panelAtMouseRow(event.y);
           if (clickedPanel === "list") {
-            panelFocusRef.current = "list";
-            setPanelFocus("list");
             if (
               event.y === listHeaderRow &&
               event.x >= listHeaderCopilotLayout.startX &&
@@ -1914,6 +1926,8 @@ export function CommentsViewer({
               void requestCopilotReviewForCurrentPr();
               continue;
             }
+            panelFocusRef.current = "list";
+            setPanelFocus("list");
             const offset = event.y - listFirstItemRow;
             if (offset >= 0 && offset < visibleRows.length) {
               const next = clamp(listStart + offset, 0, maxIndex);
