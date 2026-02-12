@@ -356,6 +356,30 @@ function Root({
     };
   }, [options.repoOverride, repoName, screen, selectedPrNumber]);
 
+  useEffect(() => {
+    if (screen !== "select-pr") {
+      return;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+    const timer = setInterval(() => {
+      if (cancelled || inFlight) {
+        return;
+      }
+
+      inFlight = true;
+      void refreshPrList("background").finally(() => {
+        inFlight = false;
+      });
+    }, AUTO_REFRESH_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [refreshPrList, screen]);
+
   if (screen === "loading-pr-list") {
     return (
       <Box paddingX={1}>
@@ -390,6 +414,7 @@ function Root({
         repoName={repoName || options.repoOverride || "(unknown repo)"}
         prs={openPrs}
         preferredPrNumber={selectedPrNumber}
+        autoRefreshIntervalMs={AUTO_REFRESH_INTERVAL_MS}
         isRefreshing={isPrListRefreshing}
         error={selectorError}
         onRefresh={() => {

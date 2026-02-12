@@ -995,6 +995,7 @@ export function PrSelector({
   repoName,
   prs,
   preferredPrNumber,
+  autoRefreshIntervalMs,
   isRefreshing,
   error,
   onRefresh,
@@ -1004,6 +1005,7 @@ export function PrSelector({
   repoName: string;
   prs: PrListItem[];
   preferredPrNumber: number | null;
+  autoRefreshIntervalMs: number;
   isRefreshing: boolean;
   error: string | null;
   onRefresh: () => void;
@@ -1042,8 +1044,11 @@ export function PrSelector({
   const appWrapWidth = Math.max(16, terminalCols - 2);
   const titleText = `ghr  ${repoName}`;
   const statusText = `Open PRs: ${prs.length}${isRefreshing ? " | refreshing..." : ""}`;
+  const refreshEvery = autoRefreshIntervalMs % 1000 === 0
+    ? `${autoRefreshIntervalMs / 1000}s`
+    : `${(autoRefreshIntervalMs / 1000).toFixed(1)}s`;
   const helpText = isRawModeSupported
-    ? "Keys: up/down or j/k move, Enter open PR, r refresh list, q quit"
+    ? `Keys: up/down or j/k move, Enter open PR, r refresh list, q quit | auto refresh ${refreshEvery}`
     : "Non-interactive terminal detected: rendered once and exiting.";
   const topHeaderLines =
     countWrappedPlainLines(titleText, appWrapWidth) +
