@@ -1248,9 +1248,10 @@ export function CommentsViewer({
   const { stdout } = useStdout();
   const rows = useMemo(() => buildUnifiedRows(data), [data]);
   const listRows = useMemo<CommentListRow[]>(() => [...rows, ADD_COMMENT_ROW], [rows]);
+  const initialActiveIndex = Math.max(0, rows.length - 1);
   const [panelFocus, setPanelFocus] = useState<PanelFocus>("list");
   const [mouseCaptureEnabled, setMouseCaptureEnabled] = useState(true);
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [activeIndex, setActiveIndex] = useState(initialActiveIndex);
   const [detailOffset, setDetailOffset] = useState(0);
   const [composerMode, setComposerMode] = useState<ComposerMode>(null);
   const [composerBody, setComposerBody] = useState("");
@@ -1967,7 +1968,7 @@ export function CommentsViewer({
         <Text color={panelFocus === "detail" ? "yellow" : "magenta"} wrap="wrap">
           {`Details${panelFocus === "detail" ? "  [focus]" : ""}`}
         </Text>
-        <Box flexDirection="column">
+        <Box flexDirection="column" height={detailNonActionLines}>
           <Text wrap="wrap">
             {detailTitle}
           </Text>
