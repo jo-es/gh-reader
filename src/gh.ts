@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { buildInlineThreads } from "./model.js";
 import type {
+  AiReviewEvent,
   CliOptions,
   IssueComment,
   IssueResource,
@@ -17,6 +18,37 @@ import type {
 const execFileAsync = promisify(execFile);
 const PR_FIELDS = "number,title,url,headRefName,baseRefName";
 const PR_LIST_FIELDS = `${PR_FIELDS},updatedAt,state`;
+
+interface TimelineEvent {
+  event: string;
+  created_at: string;
+  actor: { login: string } | null;
+  requested_reviewer?: { login: string } | null;
+}
+
+interface ReviewTimelineQueryResponse {
+  data?: {
+    repository?: {
+      pullRequest?: {
+        timelineItems?: {
+          nodes?: Array<{
+            __typename: string;
+            createdAt?: string | null;
+            actor?: { login: string } | null;
+            requestedReviewer?: { __typename?: string; login?: string | null } | null;
+          } | null> | null;
+        } | null;
+      } | null;
+    } | null;
+  };
+}
+
+interface ReviewTimelineGraphqlNode {
+  __typename: string;
+  createdAt?: string | null;
+  actor?: { login: string } | null;
+  requestedReviewer?: { __typename?: string; login?: string | null } | null;
+}
 
 async function run(
   bin: string,
@@ -107,6 +139,15 @@ async function ghPaginatedArray<T>(path: string): Promise<T[]> {
   }
 
   return flat;
+}
+
+function isAiReviewerLogin(login: string | null | undefined): boolean {
+  if (!login) {
+    return false;
+  }
+
+  const normalized = login.toLowerCase();
+  return normalized.includes("copilot") || normalized.includes("codex");
 }
 
 async function resolveRepo(repoOverride?: string): Promise<RepoIdentity> {
@@ -282,6 +323,133 @@ function normalizeReviews(input: PullRequestReview[]): PullRequestReview[] {
   });
 }
 
+function mapTimelineGraphqlNodeToEvent(
+  node: ReviewTimelineGraphqlNode | null
+): TimelineEvent | null {
+  if (!node || !node.createdAt) {
+    return null;
+  }
+
+  if (node.__typename !== "ReviewRequestedEvent" && node.__typename !== "ReviewRequestRemovedEvent") {
+    return null;
+  }
+
+  return {
+    event: node.__typename === "ReviewRequestedEvent" ? "review_requested" : "review_request_removed",
+    created_at: node.createdAt,
+    actor: node.actor || null,
+    requested_reviewer: node.requestedReviewer?.login ? { login: node.requestedReviewer.login } : null
+  };
+}
+
+async function loadTimelineEvents(repo: RepoIdentity, prNumber: number): Promise<TimelineEvent[]> {
+  try {
+    return await ghPaginatedArray<TimelineEvent>(`repos/${repo.owner}/${repo.repo}/issues/${prNumber}/timeline`);
+  } catch {
+    // Some hosts/configurations reject the REST timeline endpoint. Fall back to GraphQL.
+    const query = [
+      "query($owner:String!,$repo:String!,$number:Int!){",
+      "repository(owner:$owner,name:$repo){",
+      "pullRequest(number:$number){",
+      "timelineItems(first:250,itemTypes:[REVIEW_REQUESTED_EVENT,REVIEW_REQUEST_REMOVED_EVENT]){",
+      "nodes{",
+      "__typename",
+      "... on ReviewRequestedEvent { createdAt actor { login } requestedReviewer { __typename ... on User { login } ... on Bot { login } } }",
+      "... on ReviewRequestRemovedEvent { createdAt actor { login } requestedReviewer { __typename ... on User { login } ... on Bot { login } } }",
+      "}",
+      "}",
+      "}",
+      "}",
+      "}"
+    ].join(" ");
+
+    const raw = await run(
+      "gh",
+      [
+        "api",
+        "graphql",
+        "-f",
+        `query=${query}`,
+        "-f",
+        `owner=${repo.owner}`,
+        "-f",
+        `repo=${repo.repo}`,
+        "-F",
+        `number=${prNumber}`
+      ],
+      { allowFailure: true }
+    );
+
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = parseJson<ReviewTimelineQueryResponse>(raw, "gh api graphql review timeline");
+    const nodes = parsed.data?.repository?.pullRequest?.timelineItems?.nodes || [];
+    return nodes
+      .map((node) => mapTimelineGraphqlNodeToEvent(node as ReviewTimelineGraphqlNode | null))
+      .filter((event): event is TimelineEvent => Boolean(event));
+  }
+}
+
+function normalizeAiReviewEvents(input: AiReviewEvent[]): AiReviewEvent[] {
+  return [...input].sort((a, b) => {
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  });
+}
+
+function buildAiReviewEvents(options: {
+  timelineEvents: TimelineEvent[];
+  reviews: PullRequestReview[];
+}): AiReviewEvent[] {
+  const events: AiReviewEvent[] = [];
+  const requestedCounters = new Map<string, number>();
+
+  for (const event of options.timelineEvents) {
+    if (event.event !== "review_requested" && event.event !== "review_request_removed") {
+      continue;
+    }
+
+    const reviewerLogin = event.requested_reviewer?.login || null;
+    if (!reviewerLogin || !isAiReviewerLogin(reviewerLogin)) {
+      continue;
+    }
+
+    const counterKey = `${event.event}:${event.created_at}:${reviewerLogin}`;
+    const nextCounter = (requestedCounters.get(counterKey) || 0) + 1;
+    requestedCounters.set(counterKey, nextCounter);
+
+    events.push({
+      id: `timeline-${counterKey}:${nextCounter}`,
+      action: event.event === "review_requested" ? "requested" : "request_removed",
+      reviewerLogin,
+      actorLogin: event.actor?.login || null,
+      reviewState: null,
+      createdAt: event.created_at,
+      htmlUrl: ""
+    });
+  }
+
+  for (const review of options.reviews) {
+    const reviewerLogin = review.user?.login || null;
+    if (!reviewerLogin || !isAiReviewerLogin(reviewerLogin) || !review.submitted_at) {
+      continue;
+    }
+
+    events.push({
+      id: `review-${review.id}`,
+      action: "submitted",
+      reviewerLogin,
+      actorLogin: reviewerLogin,
+      reviewState: review.state || null,
+      createdAt: review.submitted_at,
+      htmlUrl: review.html_url || ""
+    });
+  }
+
+  return normalizeAiReviewEvents(events);
+}
+
 export async function loadPrComments(options: CliOptions): Promise<LoadedPrComments> {
   const repoPromise = resolveRepo(options.repoOverride);
   const prResolutionPromise = options.repoOverride
@@ -294,11 +462,12 @@ export async function loadPrComments(options: CliOptions): Promise<LoadedPrComme
       );
   const [repo, { pr, inference }] = await Promise.all([repoPromise, prResolutionPromise]);
 
-  const [issueResource, issueCommentsRaw, reviewCommentsRaw, reviewsRaw] = await Promise.all([
+  const [issueResource, issueCommentsRaw, reviewCommentsRaw, reviewsRaw, timelineEventsRaw] = await Promise.all([
     ghJson<IssueResource>(["api", `repos/${repo.owner}/${repo.repo}/issues/${pr.number}`]),
     ghPaginatedArray<IssueComment>(`repos/${repo.owner}/${repo.repo}/issues/${pr.number}/comments`),
     ghPaginatedArray<ReviewComment>(`repos/${repo.owner}/${repo.repo}/pulls/${pr.number}/comments`),
-    ghPaginatedArray<PullRequestReview>(`repos/${repo.owner}/${repo.repo}/pulls/${pr.number}/reviews`)
+    ghPaginatedArray<PullRequestReview>(`repos/${repo.owner}/${repo.repo}/pulls/${pr.number}/reviews`),
+    loadTimelineEvents(repo, pr.number)
   ]);
 
   const prDescription: IssueComment = {
@@ -318,6 +487,10 @@ export async function loadPrComments(options: CliOptions): Promise<LoadedPrComme
   const reviewComments = normalizeReviewComments(reviewCommentsRaw);
   const reviews = normalizeReviews(reviewsRaw);
   const inlineThreads = buildInlineThreads(reviewComments);
+  const aiReviewEvents = buildAiReviewEvents({
+    timelineEvents: timelineEventsRaw,
+    reviews
+  });
 
   return {
     repo,
@@ -326,7 +499,8 @@ export async function loadPrComments(options: CliOptions): Promise<LoadedPrComme
     issueComments,
     reviewComments,
     inlineThreads,
-    reviews
+    reviews,
+    aiReviewEvents
   };
 }
 

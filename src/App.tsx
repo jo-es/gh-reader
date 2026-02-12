@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, useStdin, useStdout } from "ink";
 import type {
+  AiReviewEvent,
   InlineCommentNode,
   IssueComment,
   LoadedPrComments,
@@ -10,6 +11,7 @@ import type {
 } from "./types.js";
 
 type PanelFocus = "list" | "detail";
+type ReplyableRowKind = "discussion" | "inline" | "review";
 const HTML_TAG_RE = /<\/?[a-z][a-z0-9-]*(?:\s[^>]*?)?\/?>/gi;
 const ADD_COMMENT_ROW: AddCommentRow = {
   key: "add-comment",
@@ -54,8 +56,11 @@ interface UnifiedCommentRow {
   createdAt: string;
   author: string;
   location: string;
-  kind: "discussion" | "inline" | "review";
+  kind: ReplyableRowKind | "system";
+  systemEvent?: AiReviewEvent;
 }
+
+type ReplyableUnifiedCommentRow = UnifiedCommentRow & { kind: ReplyableRowKind };
 
 interface AddCommentRow {
   key: "add-comment";
@@ -71,7 +76,7 @@ type ComposerMode =
   | {
       mode: "reply";
       target: {
-        kind: UnifiedCommentRow["kind"];
+        kind: ReplyableRowKind;
         id: number;
         author: string;
         htmlUrl: string;
@@ -103,6 +108,9 @@ const AUTHOR_COLOR_PALETTE: Array<NonNullable<InlineSpan["color"]>> = [
   "blue",
   "yellow"
 ];
+const SYSTEM_COLOR_CANDIDATES: Array<NonNullable<InlineSpan["color"]>> = ["gray", "white", "magenta"];
+const SYSTEM_LABEL_COLOR: NonNullable<InlineSpan["color"]> =
+  SYSTEM_COLOR_CANDIDATES.find((candidate) => !AUTHOR_COLOR_PALETTE.includes(candidate)) || "gray";
 
 function hashString(value: string): number {
   let hash = 0;
@@ -755,6 +763,59 @@ function formatCommentListLine({
   ];
 }
 
+function formatSystemEventListLine({
+  selected,
+  depth,
+  event,
+  when,
+  width
+}: {
+  selected: boolean;
+  depth: number;
+  event: AiReviewEvent;
+  when: string;
+  width: number;
+}): InlineSpan[] {
+  const safeWidth = Math.max(8, width);
+  const safeWhen = truncateText(when, Math.max(2, safeWidth - 2));
+  const maxLeft = Math.max(1, safeWidth - safeWhen.length - 1);
+
+  const leftSpans: InlineSpan[] = [
+    { text: selected ? "> " : "  ", color: selected ? "yellow" : "gray" },
+    { text: " ".repeat(Math.max(0, depth) * 2) },
+    { text: "system", color: SYSTEM_LABEL_COLOR, bold: true },
+    { text: " " }
+  ];
+
+  if (event.action === "requested") {
+    leftSpans.push({ text: event.reviewerLogin, color: authorColor(event.reviewerLogin), bold: true });
+    leftSpans.push({ text: " review requested", dim: true });
+    if (event.actorLogin) {
+      leftSpans.push({ text: " by ", dim: true });
+      leftSpans.push({ text: event.actorLogin, color: authorColor(event.actorLogin), bold: true });
+    }
+  } else if (event.action === "request_removed") {
+    leftSpans.push({ text: event.reviewerLogin, color: authorColor(event.reviewerLogin), bold: true });
+    leftSpans.push({ text: " review request removed", dim: true });
+    if (event.actorLogin) {
+      leftSpans.push({ text: " by ", dim: true });
+      leftSpans.push({ text: event.actorLogin, color: authorColor(event.actorLogin), bold: true });
+    }
+  } else {
+    leftSpans.push({ text: event.reviewerLogin, color: authorColor(event.reviewerLogin), bold: true });
+    const state = event.reviewState ? event.reviewState.toLowerCase().replace(/_/g, " ") : "review";
+    leftSpans.push({ text: ` submitted ${state} review`, dim: true });
+  }
+
+  const trimmedLeft = trimStyledSpans(leftSpans, maxLeft);
+  const gap = Math.max(1, safeWidth - spanTextLength(trimmedLeft) - safeWhen.length);
+  return [
+    ...trimmedLeft,
+    { text: " ".repeat(gap) },
+    { text: safeWhen, color: "gray", dim: true }
+  ];
+}
+
 function Body({
   text,
   indent = 0,
@@ -941,6 +1002,49 @@ function reviewRow(review: PullRequestReview): UnifiedCommentRow {
   };
 }
 
+function aiReviewEventSummary(event: AiReviewEvent): string {
+  if (event.action === "requested") {
+    const actor = event.actorLogin ? ` by ${event.actorLogin}` : "";
+    return `${event.reviewerLogin} review requested${actor}`;
+  }
+
+  if (event.action === "request_removed") {
+    const actor = event.actorLogin ? ` by ${event.actorLogin}` : "";
+    return `${event.reviewerLogin} review request removed${actor}`;
+  }
+
+  const state = event.reviewState ? event.reviewState.toLowerCase().replace(/_/g, " ") : "review";
+  return `${event.reviewerLogin} submitted ${state} review`;
+}
+
+function aiReviewEventBody(event: AiReviewEvent): string {
+  const summary = aiReviewEventSummary(event);
+  const actor = event.actorLogin ? `Actor: ${event.actorLogin}` : "";
+  const state = event.reviewState ? `State: ${event.reviewState}` : "";
+  return [summary, actor, state].filter(Boolean).join("\n");
+}
+
+function systemRow(event: AiReviewEvent): UnifiedCommentRow {
+  const key = `system-${event.id}`;
+  return {
+    key,
+    commentId: hashString(key),
+    depth: 0,
+    subline: aiReviewEventSummary(event),
+    body: aiReviewEventBody(event),
+    htmlUrl: event.htmlUrl,
+    createdAt: event.createdAt,
+    author: "system",
+    location: "review workflow",
+    kind: "system",
+    systemEvent: event
+  };
+}
+
+function isReplyableRow(row: UnifiedCommentRow | null): row is ReplyableUnifiedCommentRow {
+  return Boolean(row && row.kind !== "system");
+}
+
 function buildUnifiedRows(data: LoadedPrComments): UnifiedCommentRow[] {
   const grouped: Array<{ sort: number; rows: UnifiedCommentRow[] }> = [];
   const reviewsById = new Map<number, PullRequestReview>();
@@ -984,6 +1088,13 @@ function buildUnifiedRows(data: LoadedPrComments): UnifiedCommentRow[] {
     grouped.push({
       sort: groupSort,
       rows: [reviewRow(review), ...nestedInlineRows]
+    });
+  }
+
+  for (const event of data.aiReviewEvents) {
+    grouped.push({
+      sort: toTimestamp(event.createdAt),
+      rows: [systemRow(event)]
     });
   }
 
@@ -1266,6 +1377,7 @@ export function CommentsViewer({
   const safeActiveIndex = clamp(activeIndex, 0, maxIndex);
   const activeListRow = listRows[safeActiveIndex] || ADD_COMMENT_ROW;
   const selectedRow = activeListRow.kind === "add-comment" ? null : activeListRow;
+  const replyableSelectedRow = isReplyableRow(selectedRow) ? selectedRow : null;
 
   const openTopLevelComposer = useCallback((): void => {
     const nextComposer: ComposerMode = { mode: "top-level" };
@@ -1278,7 +1390,7 @@ export function CommentsViewer({
     setPanelFocus("detail");
   }, []);
 
-  const openReplyComposer = useCallback((row: UnifiedCommentRow): void => {
+  const openReplyComposer = useCallback((row: ReplyableUnifiedCommentRow): void => {
     const nextComposer: ComposerMode = {
       mode: "reply",
       target: {
@@ -1364,12 +1476,12 @@ export function CommentsViewer({
   }, [submitComposer]);
 
   const startReplyForSelection = useCallback((): void => {
-    if (!selectedRow) {
+    if (!replyableSelectedRow) {
       return;
     }
 
-    openReplyComposer(selectedRow);
-  }, [openReplyComposer, selectedRow]);
+    openReplyComposer(replyableSelectedRow);
+  }, [openReplyComposer, replyableSelectedRow]);
 
   useEffect(() => {
     setActiveIndex((prev) => clamp(prev, 0, maxIndex));
@@ -1476,12 +1588,12 @@ export function CommentsViewer({
       ];
     }
 
-    if (selectedRow) {
+    if (replyableSelectedRow) {
       return [{ id: "reply", label: "[Reply]", color: "cyan" }];
     }
 
     return [{ id: "compose", label: "[Compose]", color: "cyan" }];
-  }, [composerMode, isSubmittingComment, selectedRow]);
+  }, [composerMode, isSubmittingComment, replyableSelectedRow]);
 
   const detailActionSpans = useMemo(() => {
     const spans: InlineSpan[] = [];
@@ -1500,14 +1612,16 @@ export function CommentsViewer({
 
     if (composerMode) {
       spans.push({ text: "  Ctrl+S send | Esc cancel", dim: true });
-    } else if (selectedRow) {
+    } else if (replyableSelectedRow) {
       spans.push({ text: "  Press r to reply", dim: true });
+    } else if (selectedRow && selectedRow.kind === "system") {
+      spans.push({ text: "  System event (read-only)", dim: true });
     } else {
       spans.push({ text: "  Press Enter to add a new comment...", dim: true });
     }
 
     return spans;
-  }, [composerMode, detailActionButtons, selectedRow]);
+  }, [composerMode, detailActionButtons, replyableSelectedRow, selectedRow]);
 
   const detailActionColumnStart = 4;
   const detailActionLayouts = useMemo<DetailActionLayout[]>(() => {
@@ -1540,6 +1654,20 @@ export function CommentsViewer({
       }
 
       const when = fmtRelativeOrAbsolute(row.createdAt);
+      if (row.kind === "system" && row.systemEvent) {
+        return {
+          row,
+          selected,
+          spans: formatSystemEventListLine({
+            selected,
+            depth: row.depth,
+            event: row.systemEvent,
+            when,
+            width: listWrapWidth
+          })
+        };
+      }
+
       return {
         row,
         selected,
@@ -1609,7 +1737,9 @@ export function CommentsViewer({
         ? "Discussion"
         : selectedRow.kind === "inline"
           ? "Inline"
-          : "Review"
+          : selectedRow.kind === "review"
+            ? "Review"
+            : "System"
     }  ${selectedRow.author}  ${fmtRelativeOrAbsolute(selectedRow.createdAt)}`;
     detailLocation = `Location: ${normalizeSingleLineLabel(selectedRow.location)}`;
     detailUrl = selectedRow.htmlUrl;
@@ -1849,7 +1979,7 @@ export function CommentsViewer({
         return;
       }
 
-      if (input === "r" && selectedRow) {
+      if (input === "r" && replyableSelectedRow) {
         startReplyForSelection();
         return;
       }

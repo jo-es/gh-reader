@@ -50,6 +50,18 @@ export interface PullRequestReview {
   user: UserRef | null;
 }
 
+export type AiReviewEventAction = "requested" | "request_removed" | "submitted";
+
+export interface AiReviewEvent {
+  id: string;
+  action: AiReviewEventAction;
+  reviewerLogin: string;
+  actorLogin: string | null;
+  reviewState: string | null;
+  createdAt: string;
+  htmlUrl: string;
+}
+
 export interface IssueResource {
   id: number;
   body: string;
@@ -95,6 +107,7 @@ export interface LoadedPrComments {
   reviewComments: ReviewComment[];
   inlineThreads: InlineThread[];
   reviews: PullRequestReview[];
+  aiReviewEvents: AiReviewEvent[];
 }
 
 export interface CliOptions {

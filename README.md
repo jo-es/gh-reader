@@ -109,6 +109,7 @@ Compose mode:
   - discussion comments
   - inline thread roots with nested inline replies
   - review summary comments (APPROVED/COMMENTED/etc.)
+  - system events for AI review workflow (for example, Copilot/Codex review requested/submitted)
 - Inline threads linked to a review are nested under that review summary.
 - Inline replies are indented in the top list.
 - The bottom panel shows full markdown-rendered body for the selected entry.
