@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, render, Text, useInput, useStdin } from "ink";
 import { CommentsViewer, PrSelector } from "./App.js";
 import { listOpenPrs, loadPrComments, submitPrComment } from "./gh.js";
@@ -177,6 +177,8 @@ function Root({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
+  const submitInFlightRef = useRef(false);
+  const commentRefreshVersionRef = useRef(0);
 
   const refreshPrList = useCallback(
     async (mode: "initial" | "background"): Promise<boolean> => {
@@ -271,6 +273,8 @@ function Root({
         throw new Error("No pull request is currently open.");
       }
 
+      submitInFlightRef.current = true;
+      const refreshVersion = ++commentRefreshVersionRef.current;
       setIsRefreshing(true);
       try {
         await submitPrComment({
@@ -283,15 +287,22 @@ function Root({
           repoOverride: data.repo.nameWithOwner,
           prNumber: selectedPrNumber
         });
-        setData(loaded);
-        setRefreshError(null);
-        setLastUpdatedAt(Date.now());
+        if (refreshVersion === commentRefreshVersionRef.current) {
+          setData(loaded);
+          setRefreshError(null);
+          setLastUpdatedAt(Date.now());
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        setRefreshError(message);
+        if (refreshVersion === commentRefreshVersionRef.current) {
+          setRefreshError(message);
+        }
         throw new Error(message);
       } finally {
-        setIsRefreshing(false);
+        submitInFlightRef.current = false;
+        if (refreshVersion === commentRefreshVersionRef.current) {
+          setIsRefreshing(false);
+        }
       }
     },
     [data, selectedPrNumber]
@@ -314,11 +325,12 @@ function Root({
     let cancelled = false;
     let inFlight = false;
     const timer = setInterval(() => {
-      if (inFlight) {
+      if (inFlight || submitInFlightRef.current) {
         return;
       }
 
       inFlight = true;
+      const refreshVersion = ++commentRefreshVersionRef.current;
       if (!cancelled) {
         setIsRefreshing(true);
       }
@@ -328,7 +340,7 @@ function Root({
         prNumber: selectedPrNumber
       })
         .then((loaded) => {
-          if (cancelled) {
+          if (cancelled || refreshVersion !== commentRefreshVersionRef.current) {
             return;
           }
           setData(loaded);
@@ -336,7 +348,7 @@ function Root({
           setLastUpdatedAt(Date.now());
         })
         .catch((err) => {
-          if (cancelled) {
+          if (cancelled || refreshVersion !== commentRefreshVersionRef.current) {
             return;
           }
           const message = err instanceof Error ? err.message : String(err);
@@ -344,7 +356,7 @@ function Root({
         })
         .finally(() => {
           inFlight = false;
-          if (!cancelled) {
+          if (!cancelled && refreshVersion === commentRefreshVersionRef.current) {
             setIsRefreshing(false);
           }
         });

@@ -337,7 +337,7 @@ function buildReplyFallbackBody(request: SubmitCommentRequest): string {
   }
 
   const author = request.target.author ? ` @${request.target.author}` : "";
-  return `_Replying to${author}: ${request.target.htmlUrl}_\n\n${body}`;
+  return `_Replying to${author}:_ <${request.target.htmlUrl}>\n\n${body}`;
 }
 
 export async function submitPrComment(options: {
@@ -351,6 +351,10 @@ export async function submitPrComment(options: {
   }
 
   const { repo, prNumber, request } = options;
+  if (request.mode === "reply" && !request.target) {
+    throw new Error("Reply target is required when mode is \"reply\".");
+  }
+
   if (request.mode === "reply" && request.target?.kind === "inline") {
     await run("gh", [
       "api",

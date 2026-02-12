@@ -74,7 +74,7 @@ PR picker:
 
 Comments view:
 - `j`/`k` or up/down arrows: scroll focused panel
-- `Enter` on `Add your comment here...`: open composer for a top-level comment
+- `Enter` on `Press Enter to add a new comment...`: open composer for a top-level comment
 - `r`: reply to selected comment
 - `Tab`: switch focus between top list and bottom detail panel
 - `PgUp`/`PgDn`: page scroll focused panel
@@ -92,7 +92,7 @@ Compose mode:
 ## Display behavior
 
 - Top panel shows one unified comments list:
-  - `Add your comment here...` row at the top for composing a top-level comment
+  - `Press Enter to add a new comment...` row at the bottom for composing a top-level comment
   - discussion comments
   - inline thread roots with nested inline replies
   - review summary comments (APPROVED/COMMENTED/etc.)
