@@ -1,6 +1,6 @@
 # gh-feed (`gh feed`)
 
-Ink + React TUI for reading all GitHub pull request comments, including inline sub-threads.
+Ink + React TUI for reading GitHub pull request discussions/reviews in one threaded view, replying inline, and requesting Copilot review.
 
 It uses your existing `gh` authentication and calls `gh api` under the hood.
 
@@ -13,16 +13,24 @@ It uses your existing `gh` authentication and calls `gh api` under the hood.
 
 ## What it reads
 
+- Repository identity: `gh repo view --json nameWithOwner` (fallback: `git remote origin`)
+- Open PR list: `gh pr list --state open`
+- PR issue resource (for PR description/body): `repos/<owner>/<repo>/issues/<pr>`
 - PR discussion comments: `repos/<owner>/<repo>/issues/<pr>/comments`
 - Inline review comments + replies: `repos/<owner>/<repo>/pulls/<pr>/comments`
+- PR reviews: `repos/<owner>/<repo>/pulls/<pr>/reviews`
+- Review request timeline events: `repos/<owner>/<repo>/issues/<pr>/timeline` (GraphQL fallback when REST timeline is unavailable)
 
-All reads use `--paginate`.
+Array reads use `--paginate`.
 
 ## What it writes
 
 - Top-level PR comment: `repos/<owner>/<repo>/issues/<pr>/comments`
 - Inline reply to inline comment: `repos/<owner>/<repo>/pulls/<pr>/comments/<comment_id>/replies`
 - Reply to non-inline entries (discussion/review summary): posted as a PR discussion comment with a backlink to the target comment
+- Request Copilot reviewer (fallback path): `repos/<owner>/<repo>/pulls/<pr>/requested_reviewers` with `reviewers[]=copilot-pull-request-reviewer[bot]`
+
+For Copilot review requests, `gh-feed` tries `gh copilot-review` first (and auto-installs `ChrisCarini/gh-copilot-review` if missing), then verifies requested reviewers and falls back to REST when needed.
 
 ## Install
 
@@ -103,6 +111,11 @@ Compose mode:
 - `Ctrl+S`: send
 - `Esc`: cancel
 
+Detail action row (mouse + keyboard):
+- `[Compose]` / `[Reply]`: open composer
+- `[Copilot Review]`: request Copilot review for the current PR
+- `[Send]` / `[Cancel]`: active while composing
+
 ## Display behavior
 
 - Top panel shows one unified comments list:
@@ -114,6 +127,7 @@ Compose mode:
 - Inline threads linked to a review are nested under that review summary.
 - Inline replies are indented in the top list.
 - The bottom panel shows full markdown-rendered body for the selected entry.
+- The bottom panel also contains an action row for compose/reply/Copilot actions.
 - Commit hashes in markdown bodies (for example `7b3aeaf`) are rendered as clickable GitHub commit links.
 - Recent timestamps show relative time (for example `12min ago`), older items show date+time.
 - Comment bodies render lightweight markdown styling (headings, bullets, links, inline code, emphasis).
