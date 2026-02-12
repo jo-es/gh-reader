@@ -1,0 +1,27 @@
+{
+  "name": "gh-feed",
+  "version": "0.1.0",
+  "description": "Ink TUI to read all GitHub PR comments including inline sub-threads",
+  "type": "module",
+  "bin": {
+    "gh-feed": "./bin/gh-feed"
+  },
+  "scripts": {
+    "gh-feed": "node --import tsx src/index.tsx",
+    "build": "tsc --noEmit",
+    "start": "node --import tsx src/index.tsx"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ink": "^5.2.1",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "@types/react": "^18.3.18",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
