@@ -328,23 +328,114 @@ function normalizeComposeNewlines(value: string): string {
   return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
-function sanitizeComposeInput(input: string): string {
-  if (!input) {
-    return "";
+function sanitizeComposeInputChunk(input: string, carry: string): { text: string; carry: string } {
+  const ESC = "\u001b";
+  const BEL = "\u0007";
+  const combined = `${carry}${normalizeComposeNewlines(input || "")}`;
+  if (!combined) {
+    return { text: "", carry: "" };
   }
 
-  let output = normalizeComposeNewlines(input);
-  // OSC sequences
-  output = output.replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "");
-  // CSI sequences
-  output = output.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
-  // Two-byte escapes
-  output = output.replace(/\u001b[@-_]/g, "");
-  // Orphaned mouse chunks where ESC was split/lost
+  const isPrintable = (char: string): boolean => {
+    if (char === "\n" || char === "\t") {
+      return true;
+    }
+
+    const code = char.charCodeAt(0);
+    return code >= 0x20 && code !== 0x7f;
+  };
+
+  let output = "";
+  let state: "normal" | "esc" | "csi" | "osc" | "oscEsc" = "normal";
+  let sequenceStart = -1;
+
+  for (let i = 0; i < combined.length; i += 1) {
+    const char = combined[i];
+
+    if (state === "normal") {
+      if (char === ESC) {
+        state = "esc";
+        sequenceStart = i;
+        continue;
+      }
+
+      if (isPrintable(char)) {
+        output += char;
+      }
+      continue;
+    }
+
+    if (state === "esc") {
+      if (char === "[") {
+        state = "csi";
+        continue;
+      }
+
+      if (char === "]") {
+        state = "osc";
+        continue;
+      }
+
+      if (char >= "@" && char <= "_") {
+        state = "normal";
+        sequenceStart = -1;
+        continue;
+      }
+
+      state = "normal";
+      sequenceStart = -1;
+      if (isPrintable(char)) {
+        output += char;
+      }
+      continue;
+    }
+
+    if (state === "csi") {
+      if (char >= "@" && char <= "~") {
+        state = "normal";
+        sequenceStart = -1;
+      }
+      continue;
+    }
+
+    if (state === "osc") {
+      if (char === BEL) {
+        state = "normal";
+        sequenceStart = -1;
+        continue;
+      }
+
+      if (char === ESC) {
+        state = "oscEsc";
+      }
+      continue;
+    }
+
+    if (state === "oscEsc") {
+      if (char === "\\") {
+        state = "normal";
+        sequenceStart = -1;
+        continue;
+      }
+
+      if (char === ESC) {
+        continue;
+      }
+
+      state = "osc";
+    }
+  }
+
+  let nextCarry = "";
+  if (state !== "normal" && sequenceStart >= 0) {
+    nextCarry = combined.slice(sequenceStart);
+  }
+
+  // Orphaned mouse chunks where ESC was split/lost.
   output = output.replace(/\[<\d+;\d+;\d+[mM]/g, "");
-  // Remaining controls except tab/newline
+  // Remaining controls except tab/newline.
   output = output.replace(/[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]/g, "");
-  return output;
+  return { text: output, carry: nextCarry };
 }
 
 function appendTextWithCommitLinks(
@@ -1461,9 +1552,11 @@ export function CommentsViewer({
   const [detailActionError, setDetailActionError] = useState<string | null>(null);
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
   const [isRequestingCopilot, setIsRequestingCopilot] = useState(false);
+  const [composerCursorVisible, setComposerCursorVisible] = useState(true);
   const panelFocusRef = useRef<PanelFocus>("list");
   const pendingComposerRef = useRef<ComposerMode>(null);
   const submitComposerRef = useRef<() => Promise<void>>(async () => undefined);
+  const composeInputCarryRef = useRef("");
   const selectedRowKeyRef = useRef<string>(listRows[initialActiveIndex]?.key || ADD_COMMENT_ROW.key);
   const commitBaseUrl = `https://github.com/${data.repo.nameWithOwner}`;
 
@@ -1643,6 +1736,25 @@ export function CommentsViewer({
       onExitRequest();
     }
   }, [isRawModeSupported, onExitRequest]);
+
+  useEffect(() => {
+    if (!composerMode) {
+      setComposerCursorVisible(true);
+      return;
+    }
+
+    setComposerCursorVisible(true);
+    const timer = setInterval(() => {
+      setComposerCursorVisible((value) => !value);
+    }, 500);
+    return () => clearInterval(timer);
+  }, [composerMode]);
+
+  useEffect(() => {
+    if (!composerMode) {
+      composeInputCarryRef.current = "";
+    }
+  }, [composerMode]);
 
   const terminalRows = stdout.rows || 24;
   const terminalCols = stdout.columns || 80;
@@ -1937,8 +2049,9 @@ export function CommentsViewer({
         ? "Write a top-level PR comment"
         : `Reply to ${composerMode.target.author}`;
     detailUrl = "";
+    const composeCursor = composerCursorVisible ? "|" : " ";
     const normalizedComposerBody = normalizeComposeNewlines(composerBody);
-    detailBodyText = normalizedComposerBody.length > 0 ? `${normalizedComposerBody}|` : "|";
+    detailBodyText = normalizedComposerBody.length > 0 ? `${normalizedComposerBody}${composeCursor}` : composeCursor;
   } else if (selectedRow) {
     detailTitle = `${
       selectedRow.kind === "discussion"
@@ -2007,7 +2120,7 @@ export function CommentsViewer({
   }, [maxDetailOffset]);
 
   useEffect(() => {
-    if (!isRawModeSupported || !stdin.isTTY || !stdout.isTTY || !mouseCaptureEnabled || Boolean(composerMode)) {
+    if (!isRawModeSupported || !stdin.isTTY || !stdout.isTTY || !mouseCaptureEnabled) {
       return;
     }
 
@@ -2129,7 +2242,9 @@ export function CommentsViewer({
     (input, key) => {
       const effectiveComposer = composerMode ?? pendingComposerRef.current;
       if (effectiveComposer) {
-        const sanitizedInput = sanitizeComposeInput(input);
+        const sanitized = sanitizeComposeInputChunk(input, composeInputCarryRef.current);
+        composeInputCarryRef.current = sanitized.carry;
+        const sanitizedInput = sanitized.text;
 
         if (key.ctrl && input === "c") {
           onExitRequest();
