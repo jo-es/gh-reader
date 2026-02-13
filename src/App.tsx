@@ -25,7 +25,7 @@ interface InlineSpan {
   italic?: boolean;
   underline?: boolean;
   dim?: boolean;
-  color?: "blue" | "yellow" | "cyan" | "gray" | "white" | "magenta" | "green";
+  color?: "blue" | "yellow" | "cyan" | "gray" | "white" | "magenta" | "green" | "red";
   link?: string;
 }
 
@@ -1336,23 +1336,19 @@ export function PrSelector({
 
 export function CommentsViewer({
   data,
-  openPrCount,
   onExitRequest,
   onBackToPrSelection,
   onSubmitComment,
   onRequestCopilotReview,
-  autoRefreshIntervalMs,
   isRefreshing,
   lastUpdatedAt,
   refreshError
 }: {
   data: LoadedPrComments;
-  openPrCount: number;
   onExitRequest: () => void;
   onBackToPrSelection: () => void;
   onSubmitComment: (request: SubmitCommentRequest) => Promise<void>;
   onRequestCopilotReview: () => Promise<void>;
-  autoRefreshIntervalMs: number;
   isRefreshing: boolean;
   lastUpdatedAt: number | null;
   refreshError: string | null;
@@ -1560,29 +1556,46 @@ export function CommentsViewer({
   const listWrapWidth = Math.max(24, terminalCols - 10);
   const detailWrapWidth = Math.max(24, terminalCols - 8);
   const appWrapWidth = Math.max(16, terminalCols - 2);
-  const refreshEvery = autoRefreshIntervalMs % 1000 === 0
-    ? `${autoRefreshIntervalMs / 1000}s`
-    : `${(autoRefreshIntervalMs / 1000).toFixed(1)}s`;
-  const titleText = `gh-feed  ${data.repo.nameWithOwner}  #${data.pr.number}  ${data.pr.title}`;
-  const prText = `PR: ${data.pr.url}`;
-  const inferenceText = `Inference: ${data.prInference}`;
+  const prTitleText = data.pr.title || "(untitled)";
+  const headerRowOneText =
+    `gh-feed  ${data.repo.nameWithOwner}  PR #${data.pr.number} | last update ${fmtTimeOfDay(lastUpdatedAt)}${isRefreshing ? " | refreshing..." : ""}`;
+  const headerRowOneSpans: InlineSpan[] = [
+    { text: "gh-feed", color: "green", bold: true },
+    { text: `  ${data.repo.nameWithOwner}  PR `, dim: true },
+    { text: `#${data.pr.number}`, color: "cyan", underline: true, link: data.pr.url },
+    {
+      text: ` | last update ${fmtTimeOfDay(lastUpdatedAt)}${isRefreshing ? " | refreshing..." : ""}`,
+      dim: true
+    }
+  ];
+  const headerRowTwoSpans: InlineSpan[] = [
+    {
+      text: prTitleText,
+      bold: true,
+      underline: true,
+      link: data.pr.url
+    }
+  ];
+  const ciDotColor: NonNullable<InlineSpan["color"]> = data.ciStatus.state === "pass" ? "green" : "red";
+  const ciStatusText = `CI: ● ${data.ciStatus.label}`;
+  const ciStatusSpans: InlineSpan[] = [
+    { text: "CI: ", dim: true },
+    { text: "●", color: ciDotColor, bold: true },
+    { text: ` ${data.ciStatus.label}`, dim: true }
+  ];
   const mouseCaptureStatus = !mouseCaptureEnabled
     ? "off"
     : composerMode
       ? "paused (compose)"
       : "on";
-  const selectionText = `Open PRs: ${openPrCount} | mouse capture ${mouseCaptureStatus}`;
-  const refreshStatusText = `Auto refresh: every ${refreshEvery} | last update ${fmtTimeOfDay(lastUpdatedAt)}${isRefreshing ? " | refreshing..." : ""}`;
   const refreshErrorText = refreshError ? `Last refresh failed: ${refreshError}` : "";
   const helpText = isRawModeSupported
-    ? "Keys: j/k move, Enter compose, r reply, c Copilot review, Tab focus, b PR list, m mouse capture, q quit"
+    ? `Keys: j/k move, Enter compose, r reply, c Copilot review, Tab focus, b PR list, m toggle mouse capture, q quit | mouse capture ${mouseCaptureStatus}`
     : "Non-interactive terminal detected: rendered once and exiting.";
   const topHeaderLines =
-    countWrappedPlainLines(titleText, appWrapWidth) +
-    countWrappedPlainLines(prText, appWrapWidth) +
-    countWrappedPlainLines(inferenceText, appWrapWidth) +
-    countWrappedPlainLines(selectionText, appWrapWidth) +
-    countWrappedPlainLines(refreshStatusText, appWrapWidth) +
+    countWrappedPlainLines(headerRowOneText, appWrapWidth) +
+    countWrappedPlainLines(prTitleText, appWrapWidth) +
+    countWrappedPlainLines(ciStatusText, appWrapWidth) +
     (refreshError ? countWrappedPlainLines(refreshErrorText, appWrapWidth) : 0);
   const helpLineCount = countWrappedPlainLines(helpText, appWrapWidth);
   const panelRowsAvailable = Math.max(9, terminalRows - (topHeaderLines + helpLineCount + 4));
@@ -2179,20 +2192,17 @@ export function CommentsViewer({
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Text color="green" wrap="wrap">
-        {titleText}
+      <Text wrap="wrap">
+        {""}
+        <InlineText spans={headerRowOneSpans} />
       </Text>
-      <Text dimColor wrap="wrap">
-        {prText}
+      <Text wrap="wrap">
+        {""}
+        <InlineText spans={headerRowTwoSpans} />
       </Text>
-      <Text dimColor wrap="wrap">
-        {inferenceText}
-      </Text>
-      <Text dimColor wrap="wrap">
-        {selectionText}
-      </Text>
-      <Text dimColor={!refreshError} color={refreshError ? "yellow" : undefined} wrap="wrap">
-        {refreshStatusText}
+      <Text wrap="wrap">
+        {""}
+        <InlineText spans={ciStatusSpans} />
       </Text>
       {refreshError && (
         <Text color="red" wrap="wrap">

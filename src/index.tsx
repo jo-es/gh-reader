@@ -484,12 +484,10 @@ function Root({
     return (
       <CommentsViewer
         data={data}
-        openPrCount={openPrs.length}
         onExitRequest={onExitRequest}
         onBackToPrSelection={backToPrSelection}
         onSubmitComment={submitComment}
         onRequestCopilotReview={requestCopilotReview}
-        autoRefreshIntervalMs={AUTO_REFRESH_INTERVAL_MS}
         isRefreshing={isRefreshing}
         lastUpdatedAt={lastUpdatedAt}
         refreshError={refreshError}

@@ -84,6 +84,13 @@ export interface PrListItem extends PrIdentity {
   state: string;
 }
 
+export type CiStatusState = "pass" | "fail" | "pending" | "none" | "unknown";
+
+export interface CiStatusSummary {
+  state: CiStatusState;
+  label: string;
+}
+
 export interface RepoIdentity {
   owner: string;
   repo: string;
@@ -102,7 +109,7 @@ export interface InlineThread {
 export interface LoadedPrComments {
   repo: RepoIdentity;
   pr: PrIdentity;
-  prInference: string;
+  ciStatus: CiStatusSummary;
   issueComments: IssueComment[];
   reviewComments: ReviewComment[];
   inlineThreads: InlineThread[];

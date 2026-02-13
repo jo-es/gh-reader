@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { buildInlineThreads } from "./model.js";
 import type {
   AiReviewEvent,
+  CiStatusSummary,
   CliOptions,
   IssueComment,
   IssueResource,
@@ -52,6 +53,10 @@ interface ReviewTimelineGraphqlNode {
 
 interface RequestedReviewersResponse {
   users?: Array<{ login?: string | null }>;
+}
+
+interface PrCheckSummary {
+  bucket?: string | null;
 }
 
 async function run(
@@ -145,6 +150,84 @@ async function ghPaginatedArray<T>(path: string): Promise<T[]> {
   return flat;
 }
 
+function summarizeCiStatus(checks: PrCheckSummary[]): CiStatusSummary {
+  if (checks.length === 0) {
+    return {
+      state: "none",
+      label: "no checks"
+    };
+  }
+
+  const buckets = new Set(
+    checks
+      .map((check) => (check.bucket || "").trim().toLowerCase())
+      .filter((bucket) => bucket.length > 0)
+  );
+
+  if (buckets.size === 0) {
+    return {
+      state: "unknown",
+      label: "unknown"
+    };
+  }
+
+  if (buckets.has("fail") || buckets.has("cancel")) {
+    return {
+      state: "fail",
+      label: "failing"
+    };
+  }
+
+  if (buckets.has("pending")) {
+    return {
+      state: "pending",
+      label: "pending"
+    };
+  }
+
+  const onlyPassingBuckets = Array.from(buckets).every((bucket) => bucket === "pass" || bucket === "skipping");
+  if (onlyPassingBuckets) {
+    return {
+      state: "pass",
+      label: "passing"
+    };
+  }
+
+  return {
+    state: "unknown",
+    label: "unknown"
+  };
+}
+
+async function loadCiStatus(repo: RepoIdentity, prNumber: number): Promise<CiStatusSummary> {
+  const args = ["pr", "checks", String(prNumber), "--json", "bucket", "--repo", repo.nameWithOwner];
+
+  let output = "";
+  try {
+    const result = await execFileAsync("gh", args, { maxBuffer: 1024 * 1024 * 64 });
+    output = (result.stdout || "").trim();
+  } catch (error) {
+    const err = error as { stdout?: string };
+    output = (err.stdout || "").trim();
+    if (!output) {
+      return {
+        state: "unknown",
+        label: "unknown"
+      };
+    }
+  }
+
+  try {
+    const checks = parseJson<PrCheckSummary[]>(output, `gh ${args.join(" ")}`);
+    return summarizeCiStatus(checks);
+  } catch {
+    return {
+      state: "unknown",
+      label: "unknown"
+    };
+  }
+}
+
 function isAiReviewerLogin(login: string | null | undefined): boolean {
   if (!login) {
     return false;
@@ -190,7 +273,7 @@ function pickNewestPr(items: PrListItem[]): PrListItem | null {
   })[0];
 }
 
-async function resolvePr(options: CliOptions): Promise<{ pr: PrIdentity; inference: string }> {
+async function resolvePr(options: CliOptions): Promise<PrIdentity> {
   const flags = repoFlag(options.repoOverride);
 
   if (options.prNumber) {
@@ -202,12 +285,12 @@ async function resolvePr(options: CliOptions): Promise<{ pr: PrIdentity; inferen
       PR_FIELDS,
       ...flags
     ]);
-    return { pr, inference: `Using explicit PR number #${options.prNumber}.` };
+    return pr;
   }
 
   try {
     const pr = await ghJson<PrIdentity>(["pr", "view", "--json", PR_FIELDS, ...flags]);
-    return { pr, inference: "Inferred from current branch via `gh pr view`." };
+    return pr;
   } catch {
     // Continue with fallbacks.
   }
@@ -230,10 +313,7 @@ async function resolvePr(options: CliOptions): Promise<{ pr: PrIdentity; inferen
 
     const branchMatch = pickNewestPr(branchMatches);
     if (branchMatch) {
-      return {
-        pr: branchMatch,
-        inference: `No direct branch-linked PR; selected most recently updated open PR for branch "${currentBranch}".`
-      };
+      return branchMatch;
     }
 
     const branchAnyState = await ghJson<PrListItem[]>([
@@ -252,10 +332,7 @@ async function resolvePr(options: CliOptions): Promise<{ pr: PrIdentity; inferen
 
     const branchAny = pickNewestPr(branchAnyState);
     if (branchAny) {
-      return {
-        pr: branchAny,
-        inference: `No open PR found for branch "${currentBranch}". Selected most recently updated ${branchAny.state.toLowerCase()} PR for that branch.`
-      };
+      return branchAny;
     }
   }
 
@@ -273,15 +350,11 @@ async function resolvePr(options: CliOptions): Promise<{ pr: PrIdentity; inferen
 
   const best = pickNewestPr(openPrs);
   if (best && openPrs.length === 1) {
-    return { pr: best, inference: "Single open PR found and selected automatically." };
+    return best;
   }
 
   if (best && openPrs.length > 1) {
-    return {
-      pr: best,
-      inference:
-        "Multiple open PRs found. Selected the most recently updated one. Pass --pr to override."
-    };
+    return best;
   }
 
   const anyState = await ghJson<PrListItem[]>([
@@ -298,10 +371,7 @@ async function resolvePr(options: CliOptions): Promise<{ pr: PrIdentity; inferen
 
   const newestAny = pickNewestPr(anyState);
   if (newestAny) {
-    return {
-      pr: newestAny,
-      inference: `No open PRs found. Selected most recently updated ${newestAny.state.toLowerCase()} PR. Pass --pr to override.`
-    };
+    return newestAny;
   }
 
   throw new Error("Could not infer a pull request. Provide one with --pr <number>.");
@@ -536,14 +606,22 @@ export async function loadPrComments(options: CliOptions): Promise<LoadedPrComme
           repoOverride: repo.nameWithOwner
         })
       );
-  const [repo, { pr, inference }] = await Promise.all([repoPromise, prResolutionPromise]);
+  const [repo, pr] = await Promise.all([repoPromise, prResolutionPromise]);
 
-  const [issueResource, issueCommentsRaw, reviewCommentsRaw, reviewsRaw, timelineEventsRaw] = await Promise.all([
+  const [
+    issueResource,
+    issueCommentsRaw,
+    reviewCommentsRaw,
+    reviewsRaw,
+    timelineEventsRaw,
+    ciStatus
+  ] = await Promise.all([
     ghJson<IssueResource>(["api", `repos/${repo.owner}/${repo.repo}/issues/${pr.number}`]),
     ghPaginatedArray<IssueComment>(`repos/${repo.owner}/${repo.repo}/issues/${pr.number}/comments`),
     ghPaginatedArray<ReviewComment>(`repos/${repo.owner}/${repo.repo}/pulls/${pr.number}/comments`),
     ghPaginatedArray<PullRequestReview>(`repos/${repo.owner}/${repo.repo}/pulls/${pr.number}/reviews`),
-    loadTimelineEvents(repo, pr.number)
+    loadTimelineEvents(repo, pr.number),
+    loadCiStatus(repo, pr.number)
   ]);
 
   const prDescription: IssueComment = {
@@ -571,7 +649,7 @@ export async function loadPrComments(options: CliOptions): Promise<LoadedPrComme
   return {
     repo,
     pr,
-    prInference: inference,
+    ciStatus,
     issueComments,
     reviewComments,
     inlineThreads,
